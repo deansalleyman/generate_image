@@ -1,5 +1,5 @@
 ---
-title: First Agent Template
+title: Generate Image
 emoji: ⚡
 colorFrom: pink
 colorTo: yellow
@@ -12,7 +12,5 @@ tags:
 - agent
 - smolagent
 - tool
-- agent-course
 ---
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
