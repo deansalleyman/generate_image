@@ -4,6 +4,7 @@ import requests
 import pytz
 import yaml
 from tools.final_answer import FinalAnswerTool
+import tools.generator_tool as generator_tool;
 
 from Gradio_UI import GradioUI
 
@@ -32,7 +33,13 @@ def get_current_time_in_timezone(timezone: str) -> str:
         return f"The current local time in {timezone} is: {local_time}"
     except Exception as e:
         return f"Error fetching time for timezone '{timezone}': {str(e)}"
-
+@tool
+def generate_the_image(user_prompt: str) -> str:
+    """A tool that generates an image based on a user prompt using Grok's image model.
+    Args:
+        user_prompt: A short description of the image to generate.
+    """
+    return generator_tool.generate_the_image(user_prompt)
 
 final_answer = FinalAnswerTool()
 
@@ -43,15 +50,12 @@ model = LiteLLMModel(
     temperature=0.5
 )
 
-# Import tool from Hub
-image_generation_tool = load_tool("agents-course/text-to-image", trust_remote_code=True)
-
 with open("prompts.yaml", 'r') as stream:
     prompt_templates = yaml.safe_load(stream)
     
 agent = CodeAgent(
     model=model,
-    tools=[final_answer], ## add your tools here (don't remove final answer)
+    tools=[final_answer, generate_the_image], ## add your tools here (don't remove final answer)
     max_steps=6,
     verbosity_level=1,
     grammar=None,

@@ -24,6 +24,17 @@ from smolagents.agents import ActionStep, MultiStepAgent
 from smolagents.memory import MemoryStep
 from smolagents.utils import _is_package_available
 
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _is_image_path(value):
+    """True when value is a string path to an existing image file."""
+    return (
+        isinstance(value, str)
+        and value.lower().endswith(IMAGE_EXTENSIONS)
+        and os.path.exists(value)
+    )
+
 
 def pull_messages_from_step(
     step_log: MemoryStep,
@@ -153,10 +164,21 @@ def stream_to_gradio(
         ):
             yield message
 
-    final_answer = step_log  # Last log is the run's final_answer
-    final_answer = handle_agent_output_types(final_answer)
+    raw_final = step_log  # Last log is the run's final answer
+    # Newer smolagents wraps the result in a FinalAnswerStep; unwrap to the raw
+    # value so an image path is a plain string and renders inline (not as text).
+    if hasattr(raw_final, "final_answer"):
+        raw_final = raw_final.final_answer
+    final_answer = handle_agent_output_types(raw_final)
 
-    if isinstance(final_answer, AgentText):
+    if _is_image_path(raw_final):
+        # Our image tool returns a subject-named file path; render it inline
+        # while keeping the original path so the download filename is preserved.
+        yield gr.ChatMessage(
+            role="assistant",
+            content={"path": raw_final, "mime_type": "image/png"},
+        )
+    elif isinstance(final_answer, AgentText):
         yield gr.ChatMessage(
             role="assistant",
             content=f"**Final answer:**\n{final_answer.to_string()}\n",
@@ -193,11 +215,44 @@ class GradioUI:
         import gradio as gr
 
         messages.append(gr.ChatMessage(role="user", content=prompt))
-        yield messages
+        # Reset the media outputs at the start of each run
+        yield messages, gr.Image(value=None, visible=False), gr.DownloadButton(visible=False)
+
+        # Immediate "working" indicator. Agent steps are only yielded once they
+        # finish, so without this the UI sits silent for the whole first step
+        # (local model thinking + the ~10s Grok image call). A ChatMessage with
+        # status "pending" animates client-side, so it keeps spinning during the
+        # silent gap with no further server updates.
+        waiting = gr.ChatMessage(
+            role="assistant",
+            content="Working on it — generating an image can take ~10-20s.",
+            metadata={"title": "⏳ Please wait", "status": "pending"},
+        )
+        messages.append(waiting)
+        yield messages, gr.update(), gr.update()
+
+        image_path = None
         for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=False):
+            # Drop the placeholder once real output starts streaming in
+            if waiting in messages:
+                messages.remove(waiting)
             messages.append(msg)
-            yield messages
-        yield messages
+            content = getattr(msg, "content", None)
+            if isinstance(content, dict) and _is_image_path(content.get("path")):
+                image_path = content["path"]
+            if image_path:
+                yield messages, gr.Image(value=image_path, visible=True), gr.DownloadButton(
+                    value=image_path, visible=True
+                )
+            else:
+                yield messages, gr.update(), gr.update()
+
+        if image_path:
+            yield messages, gr.Image(value=image_path, visible=True), gr.DownloadButton(
+                value=image_path, visible=True
+            )
+        else:
+            yield messages, gr.update(), gr.update()
 
     def upload_file(
         self,
@@ -283,12 +338,20 @@ class GradioUI:
                     [upload_file, file_uploads_log],
                     [upload_status, file_uploads_log],
                 )
+            # Preview + download for the most recently generated image
+            image_output = gr.Image(label="Generated image", type="filepath", visible=False)
+            download_button = gr.DownloadButton(label="Download image", visible=False)
+
             text_input = gr.Textbox(lines=1, label="Chat Message")
             text_input.submit(
                 self.log_user_message,
                 [text_input, file_uploads_log],
                 [stored_messages, text_input],
-            ).then(self.interact_with_agent, [stored_messages, chatbot], [chatbot])
+            ).then(
+                self.interact_with_agent,
+                [stored_messages, chatbot],
+                [chatbot, image_output, download_button],
+            )
 
         return demo
 
